@@ -96,6 +96,10 @@ pub fn hides_when_inactive() -> bool {
     true
 }
 
+/// Nothing to do on macOS: this panel is a non-activating NSPanel, so a
+/// knock makes it the key window on its own, unlike Windows.
+pub fn take_focus(_window: &mut Window) {}
+
 /// Cmd is every app's own shortcut namespace, so the default stays on
 /// Option+Shift, like opening Spotlight used to be.
 const SUMMON: &str = "alt-shift-s";
@@ -214,10 +218,10 @@ pub fn stop_service() -> bool {
     true
 }
 
-/// Every start of the app (at login, or from Spotlight) brings the reader
-/// up, once there's a config saying what to read. Off the main thread,
-/// since starting a process takes a moment.
-pub fn on_launch() {
+/// The app at start, and the panel at every knock, brings the reader up if
+/// there is a config saying what to read, so a reader that died comes back.
+/// Off the main thread, since starting a process takes a moment.
+pub fn revive_reader() {
     std::thread::spawn(|| {
         if matches!(gyotaku_core::Config::load(), Ok(Some(_))) {
             start_reader();
