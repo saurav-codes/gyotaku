@@ -23,6 +23,15 @@ unsafe extern "C" {
     fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
 }
 
+// Cloud files. On macOS the offline-versus-downloaded state lives on
+// iCloud attributes, which need the ObjC runtime to read. Skipping a
+// person's real file is worse than indexing a placeholder and letting the
+// download start, so like Linux, no claim either way.
+
+pub fn only_in_the_cloud(_: &std::fs::Metadata) -> bool {
+    false
+}
+
 /// IOKit lists the power sources, and one whose state is Battery Power
 /// means unplugged. Desktops have no battery source, so they read as
 /// plugged in. This runs at most every 30 seconds from the watcher.

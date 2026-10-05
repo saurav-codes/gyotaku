@@ -25,8 +25,14 @@ pub fn trash(path: &Path) -> Result<Trashed> {
 /// The trash crate's os_limited is the only API that puts things back, and
 /// it has no macOS backend, so restoring from here isn't possible yet.
 /// Anything trashed above still gets the Finder's own Put Back.
-pub fn restore(_: &Trashed) -> Result<()> {
+fn restore(_: &Trashed) -> Result<()> {
     bail!("putting back from the Finder trash isn't supported on macOS yet")
+}
+
+/// Every restore fails on macOS, one error per item, unlike the systems
+/// that have a put-back API.
+pub fn restore_all(items: &[Trashed]) -> Vec<Result<()>> {
+    items.iter().map(restore).collect()
 }
 
 #[cfg(test)]

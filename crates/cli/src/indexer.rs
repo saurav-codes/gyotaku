@@ -26,9 +26,21 @@ const EXTENSIONS: [&str; 4] = ["png", "jpg", "jpeg", "webp"];
 pub enum Outcome {
     Unchanged,
     Thumbnail,
-    Indexed { lines: usize, took: Duration },
+    Indexed {
+        lines: usize,
+        took: Duration,
+    },
     Hidden(String),
+    /// Couldn't be read, but it was written moments ago and may still be
+    /// mid-write, so it's left to try again rather than written off.
+    NotYet,
 }
+
+// A file that fails to load within this long of being written is treated as
+// still being written. Browsers, for one, save as an empty file and then
+// rename the real one over it within the same second, and an mtime with only
+// seconds in it can't tell the two apart afterwards.
+const STILL_WRITING: Duration = Duration::from_secs(10);
 
 pub struct Indexer {
     pub index: Index,
@@ -63,6 +75,9 @@ impl Indexer {
     }
 
     pub fn index_file(&mut self, path: &Path) -> Result<Outcome> {
+        if fs::metadata(path).is_ok_and(|m| platform::only_in_the_cloud(&m)) {
+            return Ok(Outcome::Unchanged);
+        }
         let mtime = mtime(path)?;
         if self.index.is_current(path, mtime)? {
             // The thumbnail cache can be wiped (or its format change) without
@@ -77,9 +92,16 @@ impl Indexer {
             return Ok(Outcome::Unchanged);
         }
 
+        // A file that can't even be opened (a capture tool or a virus
+        // scanner still holding it) says nothing about the image, so it's
+        // left to try again rather than written off as unreadable.
+        if let Err(e) = fs::File::open(path) {
+            return Err(e).with_context(|| format!("can't open {}", path.display()));
+        }
         let t = Instant::now();
         let img = match gyotaku_ocr::load_image(path) {
             Ok(img) => img,
+            Err(_) if written_recently(path) => return Ok(Outcome::NotYet),
             Err(e) => return self.hide(path, mtime, format!("{e:#}")),
         };
         if img.width() < MIN_SIDE || img.height() < MIN_SIDE {
@@ -140,10 +162,21 @@ impl Indexer {
     }
 }
 
+/// An image by its extension. A name that isn't valid UTF-8 is left out: the
+/// index stores paths as text, so such a file could never be found again by
+/// its stored path and would be read again on every start.
 pub fn is_image(path: &Path) -> bool {
-    path.extension()
-        .and_then(|e| e.to_str())
-        .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+    path.to_str().is_some()
+        && path
+            .extension()
+            .and_then(|e| e.to_str())
+            .is_some_and(|e| EXTENSIONS.iter().any(|x| e.eq_ignore_ascii_case(x)))
+}
+
+fn written_recently(path: &Path) -> bool {
+    fs::metadata(path)
+        .and_then(|m| m.modified())
+        .is_ok_and(|t| t.elapsed().is_ok_and(|age| age < STILL_WRITING))
 }
 
 /// Every image under the given folders, newest first. Newest first because
@@ -169,7 +202,12 @@ pub fn scan(dirs: &[PathBuf]) -> Vec<PathBuf> {
             let file = kind.is_file() || (kind.is_symlink() && path.is_file());
             if kind.is_dir() && !hidden {
                 stack.push(path);
-            } else if file && is_image(&path) {
+            } else if file
+                && is_image(&path)
+                && !entry
+                    .metadata()
+                    .is_ok_and(|m| platform::only_in_the_cloud(&m))
+            {
                 found.insert(path);
             }
         }
