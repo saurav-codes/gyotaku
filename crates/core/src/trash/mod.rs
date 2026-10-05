@@ -13,23 +13,6 @@ mod recycle_bin;
 pub use recycle_bin::{Trashed, restore, trash};
 
 #[cfg(target_os = "macos")]
-mod unsupported {
-    use std::path::{Path, PathBuf};
-
-    use anyhow::{Result, bail};
-
-    #[derive(Debug, Clone)]
-    pub struct Trashed {
-        pub original: PathBuf,
-    }
-
-    pub fn trash(_: &Path) -> Result<Trashed> {
-        bail!("moving to the trash isn't supported on macOS yet")
-    }
-
-    pub fn restore(_: &Trashed) -> Result<()> {
-        bail!("moving to the trash isn't supported on macOS yet")
-    }
-}
+mod macos;
 #[cfg(target_os = "macos")]
-pub use unsupported::{Trashed, restore, trash};
+pub use macos::{Trashed, restore, trash};
