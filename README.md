@@ -68,9 +68,7 @@ In a terminal:
 curl -fsSL https://raw.githubusercontent.com/xevrion/gyotaku/main/install.sh | sh
 ```
 
-The same installer as on Linux; it downloads the release for Apple Silicon Macs, verifies its SHA-256 checksum and installs `gyotaku` and `gyotaku-app` to `~/.local/bin`, with ONNX Runtime beside them. Apple Silicon (arm64) is supported. Microsoft publishes no ONNX Runtime build for Intel macs, so those need a [build from source](#build-from-source) with `ORT_DYLIB_PATH` pointing at an `onnxruntime` library.
-
-The app registers the summon key itself: **Alt+Shift+S** opens the search window, and pressing it again closes it. The key can be changed in the settings.
+The same installer as on Linux: it downloads the release for Apple Silicon Macs, verifies its SHA-256 checksum and installs `gyotaku` and `gyotaku-app` to `~/.local/bin`, with ONNX Runtime beside them. Apple Silicon (arm64) is supported. Microsoft publishes no ONNX Runtime build for Intel macs, so those need a [build from source](#build-from-source) with `ORT_DYLIB_PATH` pointing at an `onnxruntime` library.
 
 Config, index and models live in `~/Library/Application Support/gyotaku`, thumbnails in `~/Library/Caches/gyotaku`.
 
