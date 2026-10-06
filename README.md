@@ -34,7 +34,7 @@ All processing happens locally. gyotaku does not take screenshots itself; it ind
 | Window summon time | ~120 ms |
 | Frame rate with a GPU | 144 fps (display refresh rate) |
 | Memory while idle in the background | 37 MB |
-| Disk usage | ~28 MB per 1,000 screenshots |
+| Disk usage | ~30 MB per 1,000 screenshots |
 
 It also runs without a GPU, using software rendering. All figures were measured on real hardware; see [Performance](docs/performance.md) for the full results and methodology.
 
@@ -46,7 +46,20 @@ It also runs without a GPU, using software rendering. All figures were measured 
 curl -fsSL https://raw.githubusercontent.com/xevrion/gyotaku/main/install.sh | sh
 ```
 
-The script downloads the latest release for your machine, verifies its SHA-256 checksum and installs `gyotaku` and `gyotaku-app` to `~/.local/bin`. It needs no root access and changes nothing outside your home directory. On a first install it opens gyotaku so you can choose your screenshot folders, then shows how to add a keyboard shortcut for your desktop.
+The script downloads the latest release for your machine, verifies its SHA-256 checksum and installs `gyotaku` and `gyotaku-app` to `~/.local/bin`, with an entry in your app launcher. It needs no root access and changes nothing outside your home directory. On a first install it opens gyotaku so you can choose your screenshot folders, then shows how to add a keyboard shortcut for your desktop.
+
+Each release also has a `.deb` for Debian and Ubuntu and an `.rpm` for Fedora and openSUSE, which install to `/usr/bin` through your package manager:
+
+```sh
+# Debian, Ubuntu (replace x86_64 with aarch64 on ARM)
+curl -fsSLO https://github.com/xevrion/gyotaku/releases/latest/download/gyotaku-x86_64-linux.deb
+sudo apt install ./gyotaku-x86_64-linux.deb
+
+# Fedora
+sudo dnf install https://github.com/xevrion/gyotaku/releases/latest/download/gyotaku-x86_64-linux.rpm
+```
+
+These don't update on their own yet; install the newer one the same way. More packages are on the way, see [packaging](packaging).
 
 Release builds run on x86_64 and ARM64 with glibc 2.35 or newer: Ubuntu 22.04, Debian 12, Fedora 36, Linux Mint 21, Pop!_OS 22.04 and later, as well as Kali, Arch Linux and openSUSE Tumbleweed. Anything else can [build from source](#build-from-source).
 
@@ -59,6 +72,8 @@ irm https://raw.githubusercontent.com/xevrion/gyotaku/main/install.ps1 | iex
 ```
 
 This installs to `%LOCALAPPDATA%\Programs\gyotaku`, adds gyotaku to the Start menu and opens it. Press **Alt+Shift+S** anywhere to open or close the search window. No administrator rights are needed. Windows 10 and 11 on x64 are supported; ARM64 runs the x64 build through emulation.
+
+If you prefer a regular installer, download [`gyotaku-setup-x86_64.exe`](https://github.com/xevrion/gyotaku/releases/latest/download/gyotaku-setup-x86_64.exe) from the latest release and run it. It installs the same files to the same folder, also without administrator rights, and lists gyotaku in Settings > Apps so it can be uninstalled from there. The setup is not code-signed yet, so SmartScreen may warn about an unknown publisher; choose **More info** and then **Run anyway**. The setup and the PowerShell command update each other's installs.
 
 ### macOS
 
@@ -102,7 +117,7 @@ Before the first screenshot is read, gyotaku downloads the OCR models once (22 M
 
 ### Updating
 
-Run the install command again. It replaces the programs and restarts the background indexer; the index, settings and thumbnails are kept.
+Run the install command again, or on Windows the newest setup. It replaces the programs and restarts the background indexer; the index, settings and thumbnails are kept.
 
 ### Uninstalling
 
@@ -118,13 +133,15 @@ Windows, in PowerShell:
 $env:GYOTAKU_UNINSTALL = 1; irm https://raw.githubusercontent.com/xevrion/gyotaku/main/install.ps1 | iex
 ```
 
+Installed with the setup on Windows, gyotaku can also be uninstalled from Settings > Apps, which asks whether to delete the index and settings too.
+
 macOS:
 
 ```sh
 curl -fsSL https://raw.githubusercontent.com/xevrion/gyotaku/main/install.sh | sh -s -- --uninstall
 ```
 
-These stop the background indexer and remove the programs, and print how to also remove the index and settings. On Linux, remove the keyboard shortcut yourself. gyotaku never modifies or deletes your screenshots unless you move them to the trash yourself.
+These commands stop the background indexer and remove the programs, and print how to also remove the index and settings. On Linux, remove the keyboard shortcut yourself. gyotaku never modifies or deletes your screenshots unless you move them to the trash yourself.
 
 ### Build from source
 
@@ -156,7 +173,7 @@ sudo dnf install git curl gcc gcc-c++ make pkgconf-pkg-config fontconfig-devel l
 sudo zypper install git curl gcc gcc-c++ make pkg-config fontconfig-devel libxkbcommon-x11-devel wayland-devel libxcb-devel
 ```
 
-Optional: install `wl-clipboard` (Wayland) or `xclip` (X11) to enable copying images. Copying text works without them.
+Optional: install `wl-clipboard` (Wayland) or `xclip` (X11) to enable copying images, and saving copied images (off by default). Copying text works without them.
 
 **macOS**: the indexer (`gyotaku`) builds with the Xcode Command Line Tools alone, which provide the C compiler that the bundled SQLite compiles with:
 
@@ -202,10 +219,11 @@ If anything does not work as described, see [Troubleshooting](docs/troubleshooti
 | Ctrl+C | Copy the screenshot's text, or the selected lines |
 | Ctrl+Shift+C | Copy the image |
 | Ctrl+, | Open settings |
+| Ctrl+E | Show the similar screenshots folded behind the selected one |
 | Ctrl+Shift+A, Ctrl+Delete | Mark every result, then move them to the trash. Ctrl+Z puts them back. |
 | Escape | Clear the search, then close |
 
-Every word in a query must appear somewhere in the screenshot, not necessarily on the same line. On an open screenshot, drag a box to copy only the lines inside it.
+Every word in a query must appear somewhere in the screenshot, not necessarily on the same line. Filters narrow it down by folder and date: `otp in:discord date:week`. On an open screenshot, drag a box to copy only the lines inside it.
 
 A command-line interface is also available:
 
@@ -217,23 +235,30 @@ See the [usage guide](docs/usage.md) for all keys, settings and commands.
 
 ## Privacy
 
-gyotaku runs entirely on your machine. It has no telemetry, accounts or update checks. Its only network access is the one-time download of the OCR models (from ModelScope) and ONNX Runtime (Microsoft's official build, from GitHub), each verified against a pinned SHA-256 checksum before use.
+gyotaku runs entirely on your machine. It has no telemetry, accounts or update checks. Its only network access is the one-time download of the OCR models (from this repository's releases, with ModelScope as a fallback) and ONNX Runtime (Microsoft's official build, from GitHub), each verified against a pinned SHA-256 checksum before use.
 
 ## Roadmap
 
 - [x] Move screenshots to the trash in bulk: search, mark the results, move them to the system trash, with undo
-- [ ] Simple installation on every supported OS: prebuilt releases and a one-command install, no Rust toolchain needed
-- [ ] A landing page with a demo, the measured numbers and the install commands
-- [ ] Windows support
+- [x] Simple installation on every supported OS: prebuilt releases and a one-command install, no Rust toolchain needed
+- [x] A Windows setup `.exe`: Start menu entry, uninstall from Apps and features
+- [ ] A macOS `.dmg` with a signed, notarized app
+- [ ] Linux packages for every family, each a separate piece of the release pipeline: Flatpak on Flathub, the AUR, a Fedora COPR, an apt repository for Debian and Ubuntu, and openSUSE's OBS
+- [x] A landing page with a demo, the measured numbers and the install commands
+- [x] Windows support
 - [ ] macOS support
 - [ ] Optional classification of screenshots (one-time codes, receipts, chats) with Jev, to find and clear out the throwaway ones. Opt-in and off by default; only the recognized text is sent, never the image
-- [ ] Typo-tolerant search for OCR misreads: look-alike characters (`0` and `O`, `rn` and `m`, `l` and `1`) and words the OCR split apart (`ord er` for `order`). Exact matches always rank first, and near matches are labelled as such, with the text exactly as it was read, so an error code is never silently "corrected". Substring matching already works through the trigram index
+- [x] Typo-tolerant search for OCR misreads: look-alike characters (`0` and `O`, `rn` and `m`, `l` and `1`). Exact matches always rank first, and near matches are labelled as such, with the text exactly as it was read, so an error code is never silently "corrected"
+- [ ] Words the OCR split apart (`ord er` for `order`), without matching words that really are apart: joining them naively found "HOURS IN VOICE" for `invoice`
 - [ ] Search by what a screenshot shows, not only the text in it ("the one with a cat"), using a small local image embedding model such as CLIP. Optional, offline, and fast enough without a GPU
 - [x] A keyboard shortcuts page in settings that lists every shortcut and lets each one be rebound by pressing the new keys
-- [ ] Screenshots that only ever go to the clipboard: an opt-in setting that saves images copied to the clipboard into a folder of their own, so they become searchable like any other screenshot
-- [ ] Group bursts of near-identical screenshots
-- [ ] Search filters such as `app:`, `in:` and dates like `yesterday`
-- [ ] More scripts, starting with Devanagari, and vertical text
+- [ ] Screenshots that only ever go to the clipboard: an opt-in setting that saves images copied to the clipboard into a folder of their own, so they become searchable like any other screenshot. Works on Linux (Wayland and X11); the Windows side is written but not yet tried on a real machine
+- [x] Group bursts of near-identical screenshots into one tile, with the rest a key away
+- [x] Search filters for the folder (`in:discord`) and the date (`date:yesterday`, `before:aug`, `after:2026-08-01`)
+- [ ] An `app:` filter, which first needs a way to know which app a screenshot was taken in: the file itself doesn't say
+- [x] Devanagari (Hindi, Marathi, Nepali), opt-in in settings, and vertical text
+- [ ] More scripts: Cyrillic, Hangul, Arabic, Thai and the rest
+- [ ] Handwriting: measure how well neat and messy handwritten notes read, and add an optional handwriting pass if it's worth it
 
 Suggestions are welcome as [feature requests](https://github.com/xevrion/gyotaku/issues/new?template=feature_request.yml).
 

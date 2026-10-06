@@ -16,7 +16,7 @@ use gpui::{
     img, list, point, prelude::*, px, size,
 };
 use gyotaku_core::trash::{self, Trashed};
-use gyotaku_core::{Config, Hit, Index, Line, Rect, Shot, ThemeChoice};
+use gyotaku_core::{Config, Hit, Index, Line, Query, Rect, Shot, ThemeChoice};
 
 use crate::grid::{self, Row};
 use crate::images::{self, Images, Lookup};
@@ -53,7 +53,8 @@ actions!(
         MarkRight,
         MarkAll,
         Trash,
-        Undo
+        Undo,
+        Similar
     ]
 );
 
@@ -114,7 +115,22 @@ pub struct Gyotaku {
     index: Index,
     input: Entity<TextInput>,
     query: String,
+    /// `query` split into words and filters (`in:`, `date:` and so on).
+    parsed: Query,
+    /// What `hits` was cut off at, so the count can say "2,000+".
+    limit: usize,
+    /// The tiles, in order. A burst of near-identical shots shows as its
+    /// first one alone, unless it's unfolded (see `gyotaku_core::burst`).
     hits: Vec<Hit>,
+    /// Every burst with more than one result: the results after its first,
+    /// whether they're on screen or folded away behind it.
+    stacks: HashMap<i64, Vec<Hit>>,
+    /// The bursts showing all their shots, until the next search.
+    unfolded: HashSet<i64>,
+    /// Stacking similar shots is on in settings.
+    grouped: bool,
+    /// How many shots the query found, folded ones included.
+    found: usize,
     /// The lines each hit matched on, looked up the first time its tile is
     /// drawn rather than for every hit up front.
     matched: HashMap<i64, Rc<Vec<Line>>>,
@@ -285,7 +301,13 @@ impl Gyotaku {
             index,
             input,
             query: String::new(),
+            parsed: Query::default(),
+            limit: BROWSE_LIMIT,
             hits: Vec::new(),
+            stacks: HashMap::new(),
+            unfolded: HashSet::new(),
+            grouped: config.group_similar,
+            found: 0,
             matched: HashMap::new(),
             thumb_paths: Vec::new(),
             thumbs: Images::new(THUMB_CACHE, THUMB_MAX_SIDE),
@@ -475,7 +497,12 @@ impl Gyotaku {
             .map(|h| h.id);
 
         self.load_hits(cx);
-        let present: HashSet<i64> = self.hits.iter().map(|h| h.id).collect();
+        let present: HashSet<i64> = self
+            .hits
+            .iter()
+            .chain(self.stacks.values().flatten())
+            .map(|h| h.id)
+            .collect();
         self.marked.retain(|id, _| present.contains(id));
         self.anchor = None;
         let at = |id: Option<i64>| id.and_then(|id| self.hits.iter().position(|h| h.id == id));
@@ -494,12 +521,19 @@ impl Gyotaku {
 
     fn load_hits(&mut self, cx: &mut Context<Self>) {
         let query = self.input.read(cx).content.to_string();
-        let limit = if query.trim().is_empty() {
+        let parsed = Query::parse(&query);
+        // Only filters, like `date:today`, list everything they let through,
+        // the way browsing does.
+        let limit = if parsed.terms.is_empty() {
             BROWSE_LIMIT
         } else {
             SEARCH_LIMIT
         };
-        self.hits = self.index.find(&query, limit).unwrap_or_default();
+        let found = self.index.find(&query, limit).unwrap_or_default();
+        self.found = found.len();
+        self.stack(found);
+        self.parsed = parsed;
+        self.limit = limit;
         self.matched.clear();
         self.thumb_paths = self
             .hits
@@ -507,6 +541,54 @@ impl Gyotaku {
             .map(|h| gyotaku_core::thumb_path(&h.path).unwrap_or_default())
             .collect();
         self.query = query;
+    }
+
+    /// Lays results out as tiles: one per burst, led by its first result,
+    /// or all of them for a burst that's unfolded.
+    fn stack(&mut self, found: Vec<Hit>) {
+        self.stacks.clear();
+        if !self.grouped {
+            self.hits = found;
+            return;
+        }
+        let bursts: Vec<i64> = found.iter().map(|h| h.burst).collect();
+        let mut found: Vec<Option<Hit>> = found.into_iter().map(Some).collect();
+        let mut hits = Vec::with_capacity(found.len());
+        for (lead, rest) in gyotaku_core::burst::stack(&bursts) {
+            let Some(lead) = found[lead].take() else {
+                continue;
+            };
+            let rest: Vec<Hit> = rest.into_iter().filter_map(|i| found[i].take()).collect();
+            let burst = lead.burst;
+            hits.push(lead);
+            if !rest.is_empty() {
+                if self.unfolded.contains(&burst) {
+                    hits.extend(rest.iter().cloned());
+                }
+                self.stacks.insert(burst, rest);
+            }
+        }
+        self.hits = hits;
+    }
+
+    /// The shots folded away behind a tile, which it stands for while
+    /// they're hidden: marking it or moving it to the trash takes them too.
+    fn folded(&self, item: usize) -> &[Hit] {
+        self.hits
+            .get(item)
+            .filter(|h| !self.unfolded.contains(&h.burst))
+            .and_then(|h| self.stacks.get(&h.burst))
+            .map_or(&[], Vec::as_slice)
+    }
+
+    /// A tile's shot and those folded behind it.
+    fn with_folded(&self, item: usize) -> Vec<Hit> {
+        self.hits
+            .get(item)
+            .into_iter()
+            .chain(self.folded(item))
+            .cloned()
+            .collect()
     }
 
     fn search(&mut self, cx: &mut Context<Self>) {
@@ -518,6 +600,7 @@ impl Gyotaku {
         self.confirming = false;
         self.fading.clear();
         self.leaves += 1;
+        self.unfolded.clear();
         self.load_hits(cx);
         self.generation += 1;
         self.selected = 0;
@@ -587,7 +670,13 @@ impl Gyotaku {
         let (index, query) = (&self.index, &self.query);
         self.matched
             .entry(hit.id)
-            .or_insert_with(|| Rc::new(index.matching_lines(hit.id, query).unwrap_or_default()))
+            .or_insert_with(|| {
+                Rc::new(
+                    index
+                        .matching_lines(hit.id, query, hit.near)
+                        .unwrap_or_default(),
+                )
+            })
             .clone()
     }
 
@@ -677,7 +766,9 @@ impl Gyotaku {
             return;
         };
         let on = !self.marked.contains_key(&id);
-        self.set_mark(id, on);
+        for hit in self.with_folded(item) {
+            self.set_mark(hit.id, on);
+        }
         self.select(Some(item), cx);
     }
 
@@ -692,7 +783,10 @@ impl Gyotaku {
             None => (self.selected, self.marked.keys().copied().collect()),
         };
         let (lo, hi) = (anchor.min(to), anchor.max(to));
-        let run: HashSet<i64> = self.hits[lo..=hi].iter().map(|h| h.id).collect();
+        let run: HashSet<i64> = (lo..=hi)
+            .flat_map(|i| self.with_folded(i))
+            .map(|h| h.id)
+            .collect();
         let stale: Vec<i64> = self
             .marked
             .keys()
@@ -753,7 +847,11 @@ impl Gyotaku {
             self.flash("search first, then mark everything it finds", cx);
             return;
         }
-        for id in self.hits.iter().map(|h| h.id).collect::<Vec<_>>() {
+        let all: Vec<i64> = (0..self.hits.len())
+            .flat_map(|i| self.with_folded(i))
+            .map(|h| h.id)
+            .collect();
+        for id in all {
             self.set_mark(id, true);
         }
         self.anchor = None;
@@ -761,19 +859,18 @@ impl Gyotaku {
     }
 
     /// What ctrl delete acts on: the open shot, else the marked ones, else
-    /// the selected one. In result order, so the toast and undo match the grid.
-    fn trash_targets(&self) -> Vec<usize> {
+    /// the selected one with any folded behind it. In result order, so the
+    /// toast and undo match the grid.
+    fn trash_targets(&self) -> Vec<Hit> {
         if let Some(d) = self.detail.as_ref().filter(|d| d.open.target() == 1.0) {
-            return vec![d.hit];
+            return self.hits.get(d.hit).cloned().into_iter().collect();
         }
         if self.marked.is_empty() {
-            return (self.selected < self.hits.len())
-                .then_some(self.selected)
-                .into_iter()
-                .collect();
+            return self.with_folded(self.selected);
         }
         (0..self.hits.len())
-            .filter(|&i| self.marked.contains_key(&self.hits[i].id))
+            .flat_map(|i| self.with_folded(i))
+            .filter(|h| self.marked.contains_key(&h.id))
             .collect()
     }
 
@@ -793,13 +890,18 @@ impl Gyotaku {
     fn trash_now(&mut self, cx: &mut Context<Self>) {
         self.confirming = false;
         let targets = self.trash_targets();
-        let Some(&first) = targets.first() else {
+        if targets.is_empty() {
             return;
-        };
+        }
+        // Where the selection lands once they're gone: the first of them
+        // that has a tile.
+        let first = targets
+            .iter()
+            .find_map(|t| self.hits.iter().position(|h| h.id == t.id))
+            .unwrap_or(self.selected);
         let mut batch = Vec::new();
         let mut failed = 0;
-        for &i in &targets {
-            let hit = &self.hits[i];
+        for hit in &targets {
             let lines = self.index.lines(hit.id).unwrap_or_default();
             match trash::trash(&hit.path) {
                 Ok(trashed) => {
@@ -813,6 +915,7 @@ impl Gyotaku {
                             mtime: hit.mtime,
                             width: hit.width,
                             height: hit.height,
+                            look: hit.look,
                         },
                         lines,
                     });
@@ -844,7 +947,7 @@ impl Gyotaku {
         }
         // Only what went to the trash loses its mark: trashing the one open
         // shot leaves the marks on the others for later.
-        let gone: Vec<i64> = targets.iter().map(|&i| self.hits[i].id).collect();
+        let gone: Vec<i64> = targets.iter().map(|h| h.id).collect();
         for id in &gone {
             self.marked.remove(id);
             self.unmarking.remove(id);
@@ -960,6 +1063,37 @@ impl Gyotaku {
             (n, f) => format!("put back {}, {} couldn't be", thousands(n), thousands(f)),
         };
         self.flash(message, cx);
+    }
+
+    fn similar(&mut self, _: &Similar, _: &mut Window, cx: &mut Context<Self>) {
+        if self.on_panel() || self.detail.is_some() {
+            return;
+        }
+        self.unfold(self.selected, cx);
+    }
+
+    /// Shows every shot in a tile's burst, right after its first, or folds
+    /// them back behind it. The selection stays on the first either way.
+    fn unfold(&mut self, item: usize, cx: &mut Context<Self>) {
+        let Some(burst) = self.hits.get(item).map(|h| h.burst) else {
+            return;
+        };
+        if !self.stacks.contains_key(&burst) {
+            self.flash("nothing similar to this one", cx);
+            return;
+        }
+        let lead = self.hits.iter().find(|h| h.burst == burst).map(|h| h.id);
+        // A question asked about the tiles before is about different ones now.
+        self.confirming = false;
+        if !self.unfolded.remove(&burst) {
+            self.unfolded.insert(burst);
+        }
+        self.refresh(cx);
+        if let Some(i) = lead.and_then(|id| self.hits.iter().position(|h| h.id == id)) {
+            self.selected = i;
+            self.reveal_selected = true;
+        }
+        cx.notify();
     }
 
     /// After shots leave or come back: recount, rerun the query, relayout.
@@ -1160,6 +1294,9 @@ impl Gyotaku {
             return;
         };
         let path = hit.path.clone();
+        // Already a file that's read, so the reader shouldn't save it again
+        // when it sees it on the clipboard.
+        gyotaku_core::clipboard::mark_own_copy(&path);
         let message = if platform::copy_image(&path, cx) {
             "copied the image"
         } else {
@@ -1370,7 +1507,15 @@ impl Gyotaku {
         let thumb = self.image(&path, Some(&original), window, cx);
         let lines = self.matched_lines(i);
         let hit = &self.hits[i];
-        let (id, crop) = (hit.id, gyotaku_core::tile_crop(hit.width, hit.height));
+        let (id, near) = (hit.id, hit.near);
+        // How many similar shots this tile leads, and whether they're
+        // folded behind it. Only the first of a burst says so.
+        let similar = self
+            .stacks
+            .get(&hit.burst)
+            .filter(|rest| rest.iter().all(|h| h.id != id))
+            .map(|rest| (rest.len(), !self.unfolded.contains(&hit.burst)));
+        let crop = gyotaku_core::tile_crop(hit.width, hit.height);
         let sink = self.tile_bounds.clone();
         let calm = self.calm(cx);
 
@@ -1462,6 +1607,62 @@ impl Gyotaku {
                 .border_1()
                 .border_color(theme.image_edge),
         );
+
+        // Found only with look-alike characters folded together, so the
+        // word in the picture isn't quite what was typed. Said plainly, so
+        // `E0425` turning up for `EO425` is never mistaken for an exact hit.
+        // 5 px in with a 5 px radius, concentric with the tile's 10.
+        if near && self.searching() {
+            inner = inner.child(
+                div()
+                    .absolute()
+                    .left(px(5.))
+                    .bottom(px(5.))
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(RADIUS - 5.))
+                    .bg(theme.panel)
+                    .border_1()
+                    .border_color(theme.hairline)
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .whitespace_nowrap()
+                    .child("near match"),
+            );
+        }
+
+        // Near-identical shots stacked behind this one. The same chip as
+        // near match, in the other corner, and it's the way in with a mouse:
+        // a click unfolds them (or folds them back) without opening the shot.
+        if let Some((n, folded)) = similar {
+            let label = if folded {
+                format!("+{n} similar")
+            } else {
+                format!("hide {n}")
+            };
+            inner = inner.child(
+                div()
+                    .id(("similar", i))
+                    .absolute()
+                    .right(px(5.))
+                    .bottom(px(5.))
+                    .px(px(6.))
+                    .py(px(1.))
+                    .rounded(px(RADIUS - 5.))
+                    .bg(theme.panel)
+                    .border_1()
+                    .border_color(theme.hairline)
+                    .text_xs()
+                    .text_color(theme.muted)
+                    .whitespace_nowrap()
+                    .cursor(CursorStyle::PointingHand)
+                    .on_click(cx.listener(move |this, _: &ClickEvent, _, cx| {
+                        cx.stop_propagation();
+                        this.unfold(i, cx);
+                    }))
+                    .child(label),
+            );
+        }
 
         let mut tile = div()
             .id(("tile", i))
@@ -1660,10 +1861,11 @@ impl Gyotaku {
         // While searching, how many matched. While browsing, when the selected
         // one was taken, which is the one thing the grid itself can't show.
         let count = if self.searching() {
-            let n = self.hits.len();
+            // Every shot found, those folded behind a tile included.
+            let n = self.found;
             match n {
                 0 => String::new(),
-                SEARCH_LIMIT.. => format!("{}+", thousands(n)),
+                n if n >= self.limit => format!("{}+", thousands(n)),
                 _ => thousands(n),
             }
         } else {
@@ -1734,6 +1936,20 @@ impl Gyotaku {
                     .into(),
                 ),
             }
+        } else if self.parsed.terms.is_empty() {
+            (
+                "nothing taken there or then".into(),
+                "filters: in:folder, date:today, date:week, date:aug, before: and after:".into(),
+            )
+        } else if !self.parsed.filters.is_empty() {
+            (
+                format!(
+                    "nothing says \u{201c}{}\u{201d}",
+                    self.parsed.terms.join(" ")
+                )
+                .into(),
+                "not with those filters, at least. try without them".into(),
+            )
         } else {
             (
                 format!("nothing says \u{201c}{}\u{201d}", self.query.trim()).into(),
@@ -1990,7 +2206,7 @@ impl Gyotaku {
             self.bar_last = Some(Bar {
                 count,
                 confirming: self.confirming,
-                can_mark_more: self.searching() && count < self.hits.len(),
+                can_mark_more: self.searching() && count < self.found,
             });
         } else {
             self.bar_shown = None;
@@ -2301,6 +2517,7 @@ impl Render for Gyotaku {
             .on_action(cx.listener(Self::mark_all))
             .on_action(cx.listener(Self::trash))
             .on_action(cx.listener(Self::undo))
+            .on_action(cx.listener(Self::similar))
             .relative()
             .size_full()
             .flex()

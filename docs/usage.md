@@ -6,6 +6,8 @@
 - [Mouse](#mouse)
 - [Settings](#settings)
 - [Background indexing](#background-indexing)
+- [Copied images](#copied-images)
+- [Other scripts](#other-scripts)
 - [Command-line interface](#command-line-interface)
 - [Flags and environment variables](#flags-and-environment-variables)
 - [File locations](#file-locations)
@@ -17,6 +19,7 @@ Open the search window with your shortcut and start typing. Results update on ev
 | Behavior | Detail |
 |---|---|
 | Partial matching | Any substring matches. `nutsmp` finds `donutsmp.net`, and `invoi` finds `invoice`. Words the OCR misread slightly remain findable from their correct parts. |
+| Misread words | After the exact matches come near matches, screenshots where a word was read with one look-alike character in place of another: `0RDER` for `order`, `rnodern` for `modern`, `E0425` for `EO425`. They are labelled `near match`, and the text is shown exactly as it was read. Words under four characters only match exactly. |
 | Multiple words | All words must appear in the screenshot, in any order and on any line. `invoice march` matches a screenshot containing both. |
 | Case | Matching is case-insensitive. |
 | Special characters | Input is always treated as literal text. `c++`, `NOT` and unbalanced quotes are valid queries. |
@@ -24,6 +27,45 @@ Open the search window with your shortcut and start typing. Results update on ev
 | Ordering | Results are ranked by match quality, then by modification time, newest first. An empty query lists all screenshots, newest first. |
 
 While a query is active, each thumbnail is dimmed and the matched lines are highlighted in place.
+
+### Filters
+
+A word of the form `key:value` with one of the keys below narrows the results by where or when a screenshot was taken. Filters combine with words and with each other, and are shown dimmed in the search box once they are complete. A query made only of filters, such as `date:today`, lists every screenshot they allow, newest first.
+
+| Filter | Matches |
+|---|---|
+| `in:<name>` | Screenshots inside a folder whose name starts with `<name>`, at any depth and ignoring case: `in:disc` for a `Discord` folder. Quote names with spaces: `in:"my shots"`. |
+| `date:<when>` | Screenshots taken during that time. |
+| `before:<when>` | Screenshots taken before it starts. |
+| `after:<when>` | Screenshots taken from the time it starts onward. `after:2026-08` includes August. |
+
+`<when>` is one of:
+
+| Value | Means |
+|---|---|
+| `today`, `yesterday` | That day, in your local time. |
+| `week`, `month` | The last 7 or 30 days, including today. |
+| `2026-08-01`, `2026-08`, `2026` | That day, month or year. |
+| `aug`, `august` | The most recent August: this year's if it has started, otherwise last year's. Any three or more letters of a month name work. |
+
+"Taken" means the file's modification time, which is when it was saved unless it was edited afterwards.
+
+Words with a colon that aren't one of these keys, like `https://`, `12:30` or `error:`, are searched as text, and so are bare words like `today`. A filter that isn't finished yet, such as `date:yes` on the way to `yesterday`, is ignored rather than searched for, so the results don't empty while you type it.
+
+There is no `app:` filter: a screenshot file records nothing about the app it was taken in, and the names screenshot tools give their files don't either.
+
+### Similar screenshots
+
+Screenshots of the same thing taken close together, like a chat captured a few times while scrolling or one page shot twice, show as a single tile marked `+N similar`. Press Ctrl+E, or click the label, to show the rest right after it; again (or `hide N`) to fold them back.
+
+| Behavior | Detail |
+|---|---|
+| What counts as similar | Taken within 10 minutes of another screenshot in the group, and either with nearly all the same text, with most of the same text moved up or down (a scroll, same size, within 2 minutes), or, for screenshots with little or no text, a nearly identical picture. Different pages of one app share its sidebar and toolbar, but not the rest of the text, so they stay apart. |
+| Which one shows | The best match for the search, or the newest when browsing. |
+| Counts | The count in the header includes every screenshot found, folded ones too. |
+| Marking and the trash | A folded tile stands for its whole group: marking it, or moving it to the trash, includes the screenshots behind it, and the count says so. |
+| Existing screenshots | Grouped in the background after an update, at idle priority, which takes about 20 seconds for 7,000 screenshots. Until then they show one by one. |
+| Turning it off | Settings, "group similar screenshots". |
 
 ## Keyboard shortcuts
 
@@ -37,6 +79,7 @@ While a query is active, each thumbnail is dimmed and the matched lines are high
 | Ctrl+O | Open the file in the default image viewer | Same |
 | Ctrl+Shift+O | Show the file in its folder | Same |
 | Ctrl+, | Open settings | |
+| Ctrl+E | Show or hide the [similar screenshots](#similar-screenshots) folded behind the selected one | |
 | Shift+Arrow keys | Mark a run of screenshots | |
 | Ctrl+Shift+A | Mark every result of the current search | |
 | Ctrl+Delete | Move the marked screenshots, or the selected one, to the trash | Move this screenshot to the trash |
@@ -62,6 +105,7 @@ Search for what you no longer need, mark the results, and move them to the trash
 
 - Click a thumbnail to open it.
 - Ctrl+click a thumbnail to mark or unmark it. Shift+click marks every thumbnail between the selection and the one clicked.
+- Click `+N similar` on a thumbnail to show the similar screenshots folded behind it, and `hide N` to fold them back.
 - The bar that appears while screenshots are marked can also be clicked.
 - On an open screenshot, hover to show the detected lines, click a line to copy it, or drag a rectangle to copy every line it intersects.
 
@@ -73,12 +117,15 @@ Open settings with Ctrl+,.
 |---|---|
 | Folders | Folders to index. The home directory and `/` are rejected; select the specific folders your screenshots are saved to. |
 | Theme | System, light or dark. |
+| Group similar screenshots | On by default. Shows near-identical screenshots taken close together as one tile. See [Similar screenshots](#similar-screenshots). |
 | Background indexing | Enables or disables the background indexer. See [Background indexing](#background-indexing). |
+| Save copied images | Off by default. Saves every image copied to the clipboard into its own folder, so images that were never saved anywhere become searchable. See [Copied images](#copied-images). |
+| Read Devanagari | Off by default. Also reads Hindi, Marathi, Nepali and other text in Devanagari. See [Other scripts](#other-scripts). |
 | Cores per screenshot | Number of CPU cores used to read a single screenshot. Higher values are faster; lower values leave more capacity for other work. Indexing always runs at idle priority. |
 | Thumbnail cache | Clears cached thumbnails. They are regenerated on demand. |
 | Shortcuts | Lists every keyboard shortcut. Select a command and press Enter, then press the new keys; Escape cancels and Delete restores the default. New keys must include Ctrl, Alt or Super (or be a function key) and must not already be in use. Navigation keys (Escape, Enter, arrows, Page Up and Page Down, Shift+arrows) are fixed. |
 
-Settings are stored in `~/.config/gyotaku/config.toml` and can also be edited directly. The background indexer applies changes to the folder list without a restart.
+Settings are stored in `~/.config/gyotaku/config.toml` and can also be edited directly. The background indexer applies changes to the folder list, to saving copied images and to the scripts it reads without a restart.
 
 ## Background indexing
 
@@ -112,11 +159,48 @@ journalctl --user -u gyotaku-watch -f      # follow the log
 gyotaku stats                              # index location and size
 ```
 
+## Copied images
+
+With **Save copied images** enabled, the background indexer watches the clipboard and saves each image copied to it as a PNG named like `Clipboard 2026-10-06 14.03.22.png`. The folder defaults to `Clipboard` inside Pictures and can be changed with `clipboard_folder` in `config.toml`. It is indexed like any configured folder, and stays indexed after the setting is turned off, for as long as it exists.
+
+An image is not saved when:
+
+- it is smaller than 32 pixels on either side;
+- the same image was saved a moment ago;
+- it is already a file in an indexed folder, as with screenshot tools that both save and copy, and with screenshots copied out of gyotaku with Ctrl+Shift+C;
+- it was copied as a file in a file manager, or marked as private by the application that copied it (password managers do this).
+
+Nothing watches the clipboard while the setting is off, and only images are ever read from it.
+
+| System | Mechanism | Requires |
+|---|---|---|
+| Wayland | `wl-paste --watch`, through the compositor's data control protocol | `wl-clipboard`, and a compositor with data control (wlroots based compositors, KDE Plasma and niri have it; GNOME does not) |
+| X11 | XFixes selection events, read with `xclip` | `xclip` |
+| Windows | A clipboard format listener | Nothing |
+
+Because only the background indexer watches the clipboard, copied images are saved only while it runs. Messages about the clipboard watcher appear in its log (`journalctl --user -u gyotaku-watch` on systemd).
+
+## Other scripts
+
+The default text reader covers Latin, Chinese, Japanese and Greek. With **Read Devanagari** enabled, Hindi, Marathi, Nepali and other text in Devanagari is read too, including lines that mix it with English. In `config.toml` this is:
+
+```toml
+scripts = ["devanagari"]
+```
+
+Enabling it downloads a 7.9 MB model the first time. If the download fails, for example offline, reading continues without it and the status line says so; the next change to the settings tries again.
+
+It applies to screenshots read from then on. Screenshots read before keep the text they were read with, since reading the whole library again would take as long as the first time. To read a particular screenshot again, touch it (`touch path/to/screenshot.png`), and the background indexer picks it up as changed.
+
+Lines that the default reader already read with confidence, and that contain no Devanagari, are never read twice, so the extra cost depends on the screenshot. On 25 screenshots with no Devanagari in them, about a quarter of lines were read a second time. See [Performance](performance.md#other-scripts).
+
+To check a single image: `gyotaku ocr --script devanagari path/to/screenshot.png`.
+
 ## Command-line interface
 
 | Command | Description |
 |---|---|
-| `gyotaku search <words>...` | Print matching screenshot paths and the lines that matched. `-n, --limit <n>` sets the maximum number of results (default 20). |
+| `gyotaku search <words>...` | Print matching screenshot paths and the lines that matched. Accepts the same [filters](#filters) as the search window; quote one with spaces for the shell, `'in:"my shots"'`. `-n, --limit <n>` sets the maximum number of results (default 20). |
 | `gyotaku stats` | Print file locations and the number of indexed screenshots. |
 | `gyotaku ocr <image>` | Read one image and print its text without indexing it. `--boxes` also prints each line's bounding box and confidence. |
 | `gyotaku index [folders]...` | Index the given folders, or the configured folders, then exit. |
@@ -139,7 +223,7 @@ gyotaku stats                              # index location and size
 
 | Path | Contents |
 |---|---|
-| `~/.config/gyotaku/config.toml` | Folders, theme, cores per screenshot |
+| `~/.config/gyotaku/config.toml` | Folders, theme, cores per screenshot, extra scripts |
 | `~/.local/share/gyotaku/index.db` | Text index |
 | `~/.local/share/gyotaku/models/` | OCR models |
 | `~/.local/share/gyotaku/runtime/` | ONNX Runtime |

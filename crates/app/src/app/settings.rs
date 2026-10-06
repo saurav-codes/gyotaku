@@ -11,7 +11,7 @@ use gpui::{
     Focusable as _, FontWeight, KeyDownEvent, MouseMoveEvent, PathPromptOptions, ScrollHandle,
     SharedString, Window, div, ease_out_quint, prelude::*, px,
 };
-use gyotaku_core::{Config, ThemeChoice, tidy};
+use gyotaku_core::{Config, Script, ThemeChoice, tidy};
 
 use super::{Gyotaku, Page, hint, thousands};
 use crate::keys::{self, SHORTCUTS};
@@ -50,7 +50,11 @@ enum Row {
     Folder(usize),
     AddFolder,
     Theme,
+    Similar,
     Background,
+    Clipboard,
+    /// An extra writing system to read, by its place in `Script::ALL`.
+    Script(usize),
     Threads,
     ClearThumbs,
     Shortcut(usize),
@@ -62,10 +66,12 @@ impl Settings {
         rows.extend([
             Row::AddFolder,
             Row::Theme,
+            Row::Similar,
             Row::Background,
-            Row::Threads,
-            Row::ClearThumbs,
+            Row::Clipboard,
         ]);
+        rows.extend((0..Script::ALL.len()).map(Row::Script));
+        rows.extend([Row::Threads, Row::ClearThumbs]);
         rows.extend((0..SHORTCUTS.len()).map(Row::Shortcut));
         rows
     }
@@ -244,6 +250,9 @@ impl Gyotaku {
                                 self.change_threads(if forward { 1 } else { -1 }, cx)
                             }
                             Some(Row::Background) => self.set_background(forward, cx),
+                            Some(Row::Clipboard) => self.set_clipboard(forward, cx),
+                            Some(Row::Script(i)) => self.set_script(i, forward, cx),
+                            Some(Row::Similar) => self.set_grouped(forward, cx),
                             _ => {}
                         }
                     }
@@ -253,6 +262,18 @@ impl Gyotaku {
                         Some(Row::Background) => {
                             let on = matches!(s.service, Service::Running);
                             self.set_background(!on, cx)
+                        }
+                        Some(Row::Clipboard) => {
+                            let on = s.config.clipboard;
+                            self.set_clipboard(!on, cx)
+                        }
+                        Some(Row::Script(i)) => {
+                            let on = s.config.scripts().contains(&Script::ALL[i]);
+                            self.set_script(i, !on, cx)
+                        }
+                        Some(Row::Similar) => {
+                            let on = s.config.group_similar;
+                            self.set_grouped(!on, cx)
                         }
                         Some(Row::Threads) => self.change_threads(1, cx),
                         Some(Row::ClearThumbs) => self.clear_thumbnails(cx),
@@ -497,6 +518,47 @@ impl Gyotaku {
             .map_or(8, |n| n.get())
             .min(16);
         config.threads = (config.threads as isize + by).clamp(1, max as isize) as usize;
+        self.save(config, cx);
+    }
+
+    /// The reader follows the config, so saving it is all that turns the
+    /// clipboard watching on or off. The folder is written down the first
+    /// time, so it's still read after saving is turned off again.
+    fn set_clipboard(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut config = self.current_config();
+        if config.clipboard == on {
+            return;
+        }
+        config.clipboard = on;
+        if config.clipboard_folder.is_none() {
+            config.clipboard_folder = config.clipboard_folder();
+        }
+        self.save(config, cx);
+    }
+
+    /// Like the clipboard, the reader follows the config: it downloads the
+    /// script's model and starts using it on the next screenshot.
+    fn set_script(&mut self, i: usize, on: bool, cx: &mut Context<Self>) {
+        let mut config = self.current_config();
+        let script = Script::ALL[i];
+        if config.scripts().contains(&script) == on {
+            return;
+        }
+        config.set_script(script, on);
+        self.save(config, cx);
+    }
+
+    /// Stacks similar shots, or shows every one. The results behind settings
+    /// are redone, so they're right when it closes.
+    fn set_grouped(&mut self, on: bool, cx: &mut Context<Self>) {
+        let mut config = self.current_config();
+        if config.group_similar == on {
+            return;
+        }
+        config.group_similar = on;
+        self.grouped = on;
+        self.unfolded.clear();
+        self.refresh(cx);
         self.save(config, cx);
     }
 
@@ -769,6 +831,24 @@ impl Gyotaku {
                         ))
                         .into_any_element()
                 }
+                Row::Similar => {
+                    let detail: SharedString = format!(
+                        "near-identical shots taken close together show as one, {} shows the rest",
+                        keys::shown("similar", cx)
+                    )
+                    .into();
+                    self.row(ix, selected, theme, cx, Key::Enter)
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child("group similar screenshots")
+                                .child(div().text_xs().text_color(theme.muted).child(detail)),
+                        )
+                        .child(switch("similar", config.group_similar, theme))
+                        .into_any_element()
+                }
                 Row::Background => {
                     list.push(section("reading"));
                     let on = service == Service::Running;
@@ -783,6 +863,41 @@ impl Gyotaku {
                                 .child(div().text_xs().text_color(theme.muted).child(status)),
                         )
                         .child(switch("background", on, theme))
+                        .into_any_element()
+                }
+                Row::Clipboard => {
+                    let detail: SharedString = match config.clipboard_folder() {
+                        Some(folder) => format!("saved in {}", tidy(&folder)).into(),
+                        None => {
+                            "keeps images you copy but never save, so they're searchable too".into()
+                        }
+                    };
+                    self.row(ix, selected, theme, cx, Key::Enter)
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child("save copied images")
+                                .child(div().text_xs().text_color(theme.muted).child(detail)),
+                        )
+                        .child(switch("clipboard", config.clipboard, theme))
+                        .into_any_element()
+                }
+                Row::Script(i) => {
+                    let script = Script::ALL[i];
+                    let on = config.scripts().contains(&script);
+                    let (name, detail) = script_words(script, on);
+                    self.row(ix, selected, theme, cx, Key::Enter)
+                        .child(
+                            div()
+                                .flex_1()
+                                .flex()
+                                .flex_col()
+                                .child(name)
+                                .child(div().text_xs().text_color(theme.muted).child(detail)),
+                        )
+                        .child(switch(("script", i), on, theme))
                         .into_any_element()
                 }
                 Row::Threads => {
@@ -1102,6 +1217,21 @@ impl Gyotaku {
                     .child(footer),
             )
             .into_any_element()
+    }
+}
+
+/// A script's settings row: its name, and what turning it on does. Screenshots
+/// already read aren't read again, that would be the whole library over.
+fn script_words(script: Script, on: bool) -> (&'static str, &'static str) {
+    match (script, on) {
+        (Script::Devanagari, false) => (
+            "read Devanagari",
+            "Hindi, Marathi, Nepali and more, an 8 MB download",
+        ),
+        (Script::Devanagari, true) => (
+            "read Devanagari",
+            "on for new screenshots, ones read before stay as they were",
+        ),
     }
 }
 

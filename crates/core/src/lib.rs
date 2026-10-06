@@ -1,5 +1,8 @@
+pub mod burst;
+pub mod clipboard;
 mod config;
 mod index;
+pub mod query;
 pub mod status;
 pub mod trash;
 
@@ -8,8 +11,9 @@ use std::path::{Path, PathBuf};
 use anyhow::{Context, Result};
 use sha2::{Digest, Sha256};
 
-pub use config::{Config, ThemeChoice, default_threads, pictures_dir, tidy, too_broad};
+pub use config::{Config, Script, ThemeChoice, default_threads, pictures_dir, tidy, too_broad};
 pub use index::{Hit, Index};
+pub use query::{Filter, Query};
 
 /// A box in normalized image coordinates, so the same numbers work on a
 /// 240px thumbnail and on the full size view.
@@ -81,6 +85,9 @@ pub struct Shot {
     /// but search never returns them.
     pub width: u32,
     pub height: u32,
+    /// The thumbnail's difference hash, see `burst::look`. None when it
+    /// couldn't be made; the reader fills it in later from the thumbnail.
+    pub look: Option<u64>,
 }
 
 fn dirs() -> Result<directories::ProjectDirs> {

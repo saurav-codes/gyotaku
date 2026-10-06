@@ -39,10 +39,17 @@ PaddleOCR's defaults target photographs of documents. gyotaku changes them for s
 |---|---|---|---|
 | Detection model | Small | Tiny | 4.6x faster, retains 99.6% of words |
 | Detection input size | Upscale to 736 px short side; never downscale | Downscale only, to ~1 megapixel | Screen text is already legible at native size. Upscaling a small crop cost 330 MB of memory with no accuracy gain. |
-| Box geometry | Rotated rectangles | Axis-aligned rectangles | Screenshot text is horizontal, so connected components are sufficient |
+| Box geometry | Rotated rectangles | Axis-aligned rectangles | Screenshot text is horizontal or vertical, so connected components are sufficient |
+| Vertical text | Columns turned counterclockwise | Turned counterclockwise, and clockwise when that reads poorly | Counterclockwise reads vertical Japanese and Chinese; a sideways label reading upwards, such as a chart axis, needs the other turn |
 | Recognition batching | 6 lines per batch | Batched by total width | The recognizer scores ~18,000 characters per step, so the output tensor dominates memory |
 
-Single-character lines are discarded, because interface icons are frequently recognized as a single high-confidence character.
+Single-character lines are discarded, because interface icons are frequently recognized as a single high-confidence character. A box at least 1.5 times taller than wide is a column: it is turned upright before recognition, and dropped if neither turn reads it with a score of 0.8 or more, since narrow icons outnumber real columns.
+
+### Other scripts
+
+The default recognizer covers Latin, Chinese, Japanese and Greek. Other scripts are opt-in, each with a recognizer of its own that is downloaded the first time it is enabled. Devanagari uses PaddleOCR's PP-OCRv5 Devanagari model (7.9 MB), whose alphabet also includes Latin letters, digits and punctuation.
+
+Detection runs once and the default recognizer reads every line. A line is read again by the extra recognizer when the default one was unsure of it (score under 0.9), or when it contains a long unread stretch: CTC decoding reports the longest run of blank steps, and a glyph outside the model's alphabet produces exactly that. A line that is half English and half Hindi reads the English confidently and leaves a gap of 24 steps where the Hindi was; fully read lines have gaps of 2 to 5. The second reading replaces the first only if it scores higher and contains the script it is for, so enabling a script never changes how English or Chinese text is read.
 
 ## Index and search
 
@@ -51,6 +58,9 @@ The index is a single SQLite database using FTS5 with the trigram tokenizer. Tri
 - **One full-text row per screenshot.** Multi-word queries match across lines. Per-line text and bounding boxes are stored in a separate table.
 - **Query escaping.** Every term is quoted before it reaches `MATCH`, so operators and punctuation in user input are treated as literal text.
 - **Short terms.** Terms under three characters cannot use the trigram index and fall back to `LIKE`, applied to rows already narrowed by the other terms.
+- **Near matches.** A second trigram index holds each screenshot's text with OCR look-alikes folded together (`0` and `o`; `1`, `l`, `i` and `|`; `5`, `s` and `$`; `8` and `b`; `m` and `rn`; `w` and `vv`; `d` and `cl`). It is only searched when the exact matches don't fill the result limit, and each candidate is then checked against the text as it was read: one misread letter is allowed in a word of four to seven letters, two from eight letters up, none under four. Without that check, folding finds ordinary words in other words, such as `email` in `internally`. Spaces are not folded, since on a real index that mostly matched words that were apart all along (`in voice` for `invoice`). Near matches always follow every exact match and are labelled in the window.
+- **Filters.** `crates/core/src/query.rs` splits a query into words and filters (`in:`, `date:`, `before:`, `after:`). Filters become plain `WHERE` clauses on the stored path and modification time, applied to both the exact and the near search, so they need no extra index; dates are resolved to local midnights when the query is parsed. `in:` matches a path component by prefix with `LIKE`, followed by a later separator so a file name can't match it. On 6,887 screenshots a filtered keystroke takes the same 1 to 12 ms as an unfiltered one, and a query of only filters takes 3 to 7 ms.
+- **Bursts.** Near-identical screenshots taken close together are grouped when they're stored, not when they're searched (`crates/core/src/burst.rs`). Each new screenshot is compared with those taken within 10 minutes of it, by its text (the share of lines in both, and whether the shared ones moved, which is what scrolling does) and, for screenshots with little text, by a 64-bit difference hash of its thumbnail. Groups chain, and each one is named by its lowest id in a `burst` column, so the window only has to collapse results that share a name, which takes under a millisecond for 20,000 results. Grouping at query time would have meant comparing the text of every result on every keystroke. The rules were tuned on 6,863 real screenshots by reading what each grouped pair said; different pages of one app share their sidebar but not the rest, and are kept apart. Screenshots indexed before version 3 of the schema are grouped by the reader in the background, 50 at a time once there is nothing new to read, with their hashes taken from the thumbnails (about 2.4 ms each).
 - **Lazy highlighting.** Matched lines are fetched only for thumbnails currently on screen. A two-letter query can match 2,000 screenshots; loading lines for all of them took 60 to 90 ms, compared with 1 to 10 ms for the ~30 visible thumbnails.
 
 ## Search window
@@ -82,6 +92,7 @@ Everything that differs between operating systems is isolated in `platform` modu
 | `crates/cli/src/platform` | | |
 | Idle priority | `SCHED_IDLE` and idle I/O priority | Process background mode |
 | Battery detection | `/sys/class/power_supply` | `GetSystemPowerStatus` |
+| Watching the clipboard, when saving copied images is on | `wl-paste --watch` on Wayland; XFixes events and `xclip` on X11 | `AddClipboardFormatListener` on a message-only window |
 | `crates/core/src/trash` | | |
 | Moving to the trash | freedesktop.org trash specification, per drive | Recycle Bin, fixed drives only |
 

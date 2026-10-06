@@ -9,6 +9,7 @@ use notify::{Event, EventKind, RecursiveMode, Watcher};
 
 use gyotaku_core::{Config, status};
 
+use crate::clipboard::Clipboard;
 use crate::indexer::{self, Indexer, Outcome};
 use crate::platform;
 
@@ -50,19 +51,28 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
     let config_path = Config::path()?;
     let config = Config::load_or_default();
     let mut threads_now = threads.unwrap_or(config.threads);
+    let mut scripts_now = config.scripts();
     let follow_config = fixed.is_none();
 
     status::set("getting the text reader ready, the first time this downloads 22 MB");
-    let indexer = match Indexer::new(threads_now) {
+    let indexer = match Indexer::new(threads_now, &scripts_now) {
         Ok(indexer) => indexer,
         Err(e) => {
             status::set(&format!("couldn't get the text reader ready: {e:#}"));
             return Err(e);
         }
     };
+    // Folders given by hand mean the config isn't followed, the clipboard
+    // setting included. Followed, this makes the clipboard folder before it's
+    // watched.
+    let mut clipboard = Clipboard::new();
+    if follow_config {
+        clipboard.follow(&config);
+    }
+    let fresh = clipboard.fresh();
     let mut w = Watch {
         indexer,
-        folders: fixed.clone().unwrap_or(config.folders),
+        folders: fixed.clone().unwrap_or(config.reading_folders()),
         pending: HashMap::new(),
         leaving: HashMap::new(),
         last_from: None,
@@ -72,7 +82,12 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
     w.forget_the_gone(follow_config);
 
     let (tx, rx) = mpsc::channel();
-    let mut watcher = notify::recommended_watcher(tx)?;
+    let mut watcher = notify::recommended_watcher(move |event: notify::Result<Event>| {
+        if let Ok(event) = &event {
+            fresh.note(event);
+        }
+        let _ = tx.send(event);
+    })?;
     for dir in &w.folders {
         watch_folder(&mut watcher, dir);
     }
@@ -88,6 +103,8 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
         .filter(|p| w.indexer.needs_reading(p))
         .collect();
     let mut caught_up = backlog.is_empty();
+    // Shots read before bursts existed may still need theirs worked out.
+    let mut settling = true;
     let mut power = Power::default();
     // How far through the backlog, for the window: (done, of).
     let mut progress = (0, backlog.len());
@@ -115,10 +132,10 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
         // Block for as long as there is nothing else to do.
         let wait = if !w.pending.is_empty() || !w.leaving.is_empty() {
             SETTLE
-        } else if !backlog.is_empty() || !w.arrived.is_empty() || w.rescan {
+        } else if !backlog.is_empty() || settling || !w.arrived.is_empty() || w.rescan {
             // Working through an old library can wait, a laptop's battery
             // matters more. Anything new still wakes this straight away.
-            if power.on_battery() && !backlog.is_empty() {
+            if power.on_battery() && (!backlog.is_empty() || settling) {
                 BATTERY_PACE
             } else {
                 Duration::ZERO
@@ -137,8 +154,9 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
 
         // A config that doesn't parse (someone mid edit) is ignored until it does.
         if config_changed && let Ok(Some(config)) = Config::load_from(&config_path) {
-            let added: Vec<PathBuf> = config
-                .folders
+            clipboard.follow(&config);
+            let folders = config.reading_folders();
+            let added: Vec<PathBuf> = folders
                 .iter()
                 .filter(|f| !w.folders.contains(f))
                 .cloned()
@@ -146,15 +164,14 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
             let gone: Vec<PathBuf> = w
                 .folders
                 .iter()
-                .filter(|f| !config.folders.contains(f))
+                .filter(|f| !folders.contains(f))
                 .cloned()
                 .collect();
             for gone in &gone {
                 let _ = watcher.unwatch(gone);
-                backlog.retain(|p| {
-                    !p.starts_with(gone) || config.folders.iter().any(|f| p.starts_with(f))
-                });
-                let dropped = w.forget_under(gone, &config.folders);
+                backlog
+                    .retain(|p| !p.starts_with(gone) || folders.iter().any(|f| p.starts_with(f)));
+                let dropped = w.forget_under(gone, &folders);
                 eprintln!(
                     "stopped watching {} ({dropped} screenshots forgotten)",
                     gone.display()
@@ -164,7 +181,7 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
             // inside it, including a folder that's still wanted
             // (~/Pictures/Screenshots after removing ~/Pictures).
             if !gone.is_empty() {
-                for dir in config.folders.iter().filter(|f| !added.contains(f)) {
+                for dir in folders.iter().filter(|f| !added.contains(f)) {
                     watch_folder(&mut watcher, dir);
                 }
             }
@@ -178,12 +195,33 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
                 }
                 caught_up = false;
             }
-            if threads.is_none() && config.threads != threads_now {
-                threads_now = config.threads;
-                w.indexer.set_threads(threads_now)?;
-                eprintln!("reading with {threads_now} threads now");
+            let threads_wanted = threads.unwrap_or(config.threads);
+            let scripts_wanted = config.scripts();
+            if threads_wanted != threads_now || scripts_wanted != scripts_now {
+                // A new script's model downloads here. Offline, reading goes
+                // on as before, and the next config change tries again.
+                if scripts_wanted != scripts_now {
+                    status::set("getting the reader for another script ready");
+                }
+                match w.indexer.set_reader(threads_wanted, &scripts_wanted) {
+                    Ok(()) => {
+                        threads_now = threads_wanted;
+                        scripts_now = scripts_wanted;
+                        eprintln!(
+                            "reading with {threads_now} threads and {} extra scripts now",
+                            scripts_now.len()
+                        );
+                        if caught_up {
+                            status::set("up to date");
+                        }
+                    }
+                    Err(e) => {
+                        eprintln!("couldn't change the reader: {e:#}");
+                        status::set(&format!("couldn't get that script's reader: {e:#}"));
+                    }
+                }
             }
-            w.folders = config.folders;
+            w.folders = folders;
         }
 
         // A folder that appeared brings files no event mentioned, and lost
@@ -242,8 +280,25 @@ pub fn run(fixed: Option<Vec<PathBuf>>, threads: Option<usize>) -> Result<()> {
                 w.indexer.index.visible_len()?
             );
         }
+
+        // Last of all, with nothing left to read: bursts for shots read
+        // before there were any, a batch at a time so a screenshot taken
+        // meanwhile never waits on it for long. Quietly, the window shows
+        // the shots either way, only not stacked yet.
+        if backlog.is_empty() && settling {
+            settling = match w.indexer.settle_some(SETTLE_BATCH) {
+                Ok(n) => n > 0,
+                Err(e) => {
+                    eprintln!("working out similar screenshots: {e:#}");
+                    false
+                }
+            };
+        }
     }
 }
+
+// About 50 thumbnails decoded and compared, well under a second.
+const SETTLE_BATCH: usize = 50;
 
 /// One watcher at a time. A second would read every new screenshot again and
 /// fight the first over the index, so it just leaves. The lock is held for

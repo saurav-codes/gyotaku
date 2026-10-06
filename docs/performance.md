@@ -5,6 +5,7 @@ All figures on this page are measurements. None are estimates or extrapolations.
 - [Test environment](#test-environment)
 - [Search window](#search-window)
 - [Indexing](#indexing)
+- [Other scripts](#other-scripts)
 - [Search](#search)
 - [macOS on Apple Silicon](#macos-on-apple-silicon)
 - [Disk usage](#disk-usage)
@@ -59,9 +60,29 @@ Indexing 25 real screenshots with the process pinned to a given number of cores:
 
 Recall is measured on 25 randomly selected screenshots against the larger detection model at PaddleOCR's default settings. The tuned configuration uses a detector 4.6x faster. See [Architecture](architecture.md#text-recognition) for details.
 
+## Other scripts
+
+Reading Devanagari as well (**Read Devanagari** in settings), on the same 25 screenshots, none of which contain Devanagari, 4 cores:
+
+| | Default | With Devanagari |
+|---|---|---|
+| Median time per screenshot, idle machine | 600 ms | 743 ms |
+| Total for the 25, idle machine | 14.4 s | 17.5 s (+21%) |
+| Total for the 25, machine under load, runs interleaved | 17.6 s | 17.4 s |
+| Lines read a second time | | 148 of 564 (26%) |
+| Lines kept | 456 | 456 |
+
+Under load the difference disappears into the noise. The extra recognizer is a third the size of the default one, and only reads lines the default one was unsure of or left gaps in. On these screenshots it changed no line and added none.
+
+Accuracy on rendered Hindi and Marathi screenshots (chat, payment receipt, settings page, municipal notice, an order page mixing Hindi and English), Noto Sans and Noto Serif Devanagari at 15 to 18 pt: every line was read, at scores of 0.91 to 0.99, where the default reader returned nothing or stray Latin letters. Misreads were in conjuncts and nasal marks, for example "पुणे" read as "पुण" and "रास्ते" as "रासत".
+
+Vertical text costs nothing extra unless a screenshot has some: only boxes at least 1.5 times taller than wide are turned, and on 100 real screenshots the text read was identical with and without it.
+
 ## Search
 
 1 to 10 ms per keystroke across more than 5,000 screenshots, including fetching the matched lines for the visible results.
+
+Stacking [similar screenshots](usage.md#similar-screenshots) into one tile adds 0.02 ms per keystroke (median; 0.3 ms at most), and 0.7 ms when browsing all 6,863 screenshots of the test library. Grouping a library indexed before groups existed is a one-time background job of about 2.4 ms per screenshot, 17 s for that library, at idle priority.
 
 ## macOS on Apple Silicon
 
@@ -82,7 +103,7 @@ Measured on a MacBook Air M2 (8 cores, 16 GB RAM, macOS 27.0.1) while the machin
 
 | Item | Size |
 |---|---|
-| Text index | ~4.6 MB per 1,000 screenshots |
+| Text index | ~6.8 MB per 1,000 screenshots (measured on 6,887) |
 | Thumbnails | ~23 MB per 1,000 screenshots (24 KB each; regenerated on demand) |
 | OCR models | 22 MB, downloaded once |
 | ONNX Runtime | 24 MB, downloaded once |
