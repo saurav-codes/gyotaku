@@ -86,7 +86,7 @@ Stacking [similar screenshots](usage.md#similar-screenshots) into one tile adds 
 
 ## macOS on Apple Silicon
 
-Measured on a MacBook Air M2 (8 cores, 16 GB RAM, macOS 27.0.1) while the machine was in everyday use, load average about 7.5, with the reader niced by its launchd agent. `footprint` counts the pages the process keeps resident; `ps` RSS also counts every mapped shared page, such as AppKit, Metal and the ONNX Runtime library, which is why it reads higher than the private-memory figures in the tables above.
+Measured on a MacBook Air M2 (8 cores, 16 GB RAM, macOS 27.0.1) while the machine was in everyday use, load average about 7.5, with the reader running at idle priority. `footprint` counts the pages the process keeps resident; `ps` RSS also counts every mapped shared page, such as AppKit, Metal and the ONNX Runtime library, which is why it reads higher than the private-memory figures in the tables above.
 
 | Metric | Result |
 |---|---|

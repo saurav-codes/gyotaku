@@ -23,13 +23,25 @@ unsafe extern "C" {
     fn malloc_zone_pressure_relief(zone: *mut std::ffi::c_void, goal: usize) -> usize;
 }
 
-// Cloud files. On macOS the offline-versus-downloaded state lives on
-// iCloud attributes, which need the ObjC runtime to read. Skipping a
-// person's real file is worse than indexing a placeholder and letting the
-// download start, so like Linux, no claim either way.
+// Cloud files. iCloud Drive evicts a file's contents and leaves a
+// placeholder with SF_DATALESS set in st_flags. Reading such a file starts
+// a download, so the indexer leaves it until it is back on disk.
 
-pub fn only_in_the_cloud(_: &std::fs::Metadata) -> bool {
-    false
+const SF_DATALESS: u32 = 0x4000_0000;
+
+pub fn only_in_the_cloud(meta: &std::fs::Metadata) -> bool {
+    use std::os::macos::fs::MetadataExt;
+    meta.st_flags() & SF_DATALESS != 0
+}
+
+// Clipboard images. Watching the pasteboard needs the ObjC runtime, so
+// macOS gets the handle that never sends anything; screenshots saved to
+// disk are still read.
+
+pub struct ClipboardWatch;
+
+pub fn watch_clipboard(_: std::sync::mpsc::Sender<Vec<u8>>) -> ClipboardWatch {
+    ClipboardWatch
 }
 
 /// IOKit lists the power sources, and one whose state is Battery Power

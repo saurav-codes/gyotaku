@@ -186,10 +186,10 @@ pub fn background_status(service: Service, _searchable: usize) -> String {
     }
 }
 
-/// Running if the reader is up, or if the agent is there to start it at
-/// next login.
+/// Running if the agent is there to start gyotaku at next login. The reader
+/// being up says nothing, since the app starts it whenever it is open.
 pub fn service_status() -> Service {
-    if reader_running() || plist().is_some_and(|p| p.exists()) {
+    if plist().is_some_and(|p| p.exists()) {
         Service::Running
     } else {
         Service::Stopped
@@ -199,7 +199,10 @@ pub fn service_status() -> Service {
 /// Writes the agent and starts it now. bootstrap complains when the agent
 /// is already loaded, so falling that back to a kickstart still starts it.
 pub fn start_service() -> bool {
-    if install_plist().is_err() {
+    let Ok(app) = std::env::current_exe() else {
+        return false;
+    };
+    if install_plist(&app.to_string_lossy()).is_err() {
         return false;
     }
     let Some(plist) = plist() else { return false };
@@ -235,7 +238,7 @@ pub fn keep_reading() {
 }
 
 fn start_reader() {
-    if reader_running() {
+    if gyotaku_core::status::reader_running() {
         return;
     }
     // A child outlives its parent here with no ceremony; launchd adopts it.
@@ -245,21 +248,6 @@ fn start_reader() {
         .stdout(Stdio::null())
         .stderr(Stdio::null())
         .spawn();
-}
-
-fn reader_running() -> bool {
-    let Ok(dir) = gyotaku_core::data_dir() else {
-        return false;
-    };
-    let Ok(lock) = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(false)
-        .write(true)
-        .open(dir.join("watch.lock"))
-    else {
-        return false;
-    };
-    matches!(lock.try_lock(), Err(std::fs::TryLockError::WouldBlock))
 }
 
 fn plist() -> Option<PathBuf> {
@@ -280,15 +268,15 @@ fn launchctl(args: &[&str]) -> bool {
         .is_ok_and(|s| s.success())
 }
 
-fn install_plist() -> std::io::Result<()> {
+fn install_plist(app: &str) -> std::io::Result<()> {
     let Some(plist) = plist() else {
         return Err(std::io::ErrorKind::NotFound.into());
     };
     // Rewritten when it differs, so an agent left over from an earlier
-    // install points at the gyotaku next to this app instead of an old or
+    // install points at this app instead of an old or
     // deleted one. Edits made with launchctl override live outside this
     // file, which this never touches.
-    let wanted = plist_file(&crate::setup::cli_path());
+    let wanted = plist_file(app);
     if std::fs::read_to_string(&plist).is_ok_and(|have| have == wanted) {
         return Ok(());
     }
@@ -304,13 +292,11 @@ fn plist_file(exec: &str) -> String {
          <plist version=\"1.0\">\n\
          <dict>\n\
          \t<key>Label</key><string>{LABEL}</string>\n\
-         \t<key>ProgramArguments</key><array><string>{exec}</string><string>watch</string></array>\n\
+         \t<key>ProgramArguments</key><array><string>{exec}</string><string>--background</string></array>\n\
          \t<key>RunAtLoad</key><true/>\n\
          \t<key>KeepAlive</key><dict><key>SuccessfulExit</key><false/></dict>\n\
          \t<key>ThrottleInterval</key><integer>30</integer>\n\
-         \t<key>Nice</key><integer>19</integer>\n\
-         \t<key>ProcessType</key><string>Background</string>\n\
-         \t<key>StandardOutPath</key><string>/dev/null</string>\n\
+                  \t<key>StandardOutPath</key><string>/dev/null</string>\n\
          \t<key>StandardErrorPath</key><string>/dev/null</string>\n\
          </dict>\n\
          </plist>\n"
@@ -344,17 +330,16 @@ mod tests {
     use super::*;
 
     #[test]
-    fn the_agent_runs_the_reader_nicely() {
-        let plist = plist_file("/x/gyotaku");
-        assert!(plist.contains("<string>/x/gyotaku</string><string>watch</string>"));
-        assert!(plist.contains("<key>Nice</key>"));
-        assert!(plist.contains("<key>ProcessType</key><string>Background</string>"));
+    fn the_agent_starts_the_app_hidden() {
+        let plist = plist_file("/x/gyotaku-app");
+        assert!(plist.contains("<string>/x/gyotaku-app</string><string>--background</string>"));
+        assert!(!plist.contains("<string>watch</string>"));
     }
 
     #[test]
     fn the_agent_keeps_quotes_out_of_paths() {
-        let plist = plist_file("/a&b/gyotaku");
-        assert!(plist.contains("/a&amp;b/gyotaku"));
+        let plist = plist_file("/a&b/gyotaku-app");
+        assert!(plist.contains("/a&amp;b/gyotaku-app"));
     }
 
     #[test]
